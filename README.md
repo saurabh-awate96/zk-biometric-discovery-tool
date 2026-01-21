@@ -1,11 +1,14 @@
 # ZK Biometric Discovery Tool
 
-A professional utility for discovering and identifying ZKTeco biometric devices within a local network environment. This tool is designed to simplify the initial setup phase by automating device scanning and metadata retrieval.
+A professional utility for automatically discovering and identifying ZKTeco biometric devices within a local network environment. This tool simplifies the setup phase by automating device scanning and metadata retrieval.
 
 ## Features
-- **Network Discovery**: Multi-threaded scanning of local subnets to identify active ZK devices.
-- **Identity Retrieval**: Securely connects to discovered devices to pull unique identifiers (Serial Number, Device Name).
-- **Communication Validation**: Built-in verification scripts to ensure network routing and protocol compatibility.
+- **Auto-Discovery Suite**: Unified interface for automatic network scanning and device identification
+- **Targeted Scanning**: Automatically scans `192.168.1.x` and `192.168.0.x` subnets for active ZK devices
+- **Device Management**: Save, test, and manage multiple discovered device configurations
+- **Config Export**: Export device settings to `config.env` for use with other attendance scripts
+- **Identity Retrieval**: Securely connects to discovered devices to pull unique identifiers (Serial Number, Device Name)
+- **Communication Validation**: Built-in verification scripts to ensure network routing and protocol compatibility
 
 ## Prerequisites
 - Python 3.x
@@ -18,23 +21,48 @@ pip install -r requirements.txt
 ```
 
 ## Quick Start
-1. **Discover Devices**: Find all ZKTeco devices on your current subnet.
+
+### 🚀 Interactive Device Manager (Recommended)
+The easiest way to discover and manage your devices:
+```bash
+./run_device_manager.sh
+```
+
+**Workflow:**
+1. Run discovery to find devices on your network (`192.168.1.x` and `192.168.0.x`)
+2. Save discovered devices to your local list
+3. Export the desired device to `config.env` to make it "Active"
+4. Use attendance scripts to fetch data
+
+### 🛠️ Individual Scripts
+
+1. **Standalone Network Scan**:
    ```bash
-   python scan_network.py
+   python3 scan_network.py
    ```
-2. **Fetch Identity**: Retrieve the serial number and firmware name for a specific device.
+
+2. **Fetch Device Identity**:
    ```bash
-   python get_device_info.py
+   python3 get_device_info.py [IP_ADDRESS]
    ```
-3. **Verify Connection**: Test basic packet exchange with a known IP.
+
+3. **Verify Handshake**:
    ```bash
-   python test_connection.py
+   python3 test_connection.py
+   ```
+
+4. **Fetch Attendance**:
+   ```bash
+   python3 fetch_attendance.py --ip [IP] --yesterday
    ```
 
 ## Architecture
-- `scan_network.py`: Implements UDP/TCP sweeping for device discovery.
-- `get_device_info.py`: Handles session-based connection to ZK protocol for info extraction.
-- `test_connection.py`: Simple handshake validation.
+- `device_manager.py`: Main interactive auto-discovery and management tool
+- `scan_network.py`: Implements network sweeping for device discovery
+- `get_device_info.py`: Handles session-based connection for info extraction
+- `fetch_attendance.py`: Comprehensive attendance data retrieval engine
+- `devices.json`: Saved device configurations (auto-generated)
+- `config.env`: Active device configuration for automated scripts
 
 ---
-*Note: This tool is intended for initial hardware provisioning and discovery.*
+*Note: This tool is intended for hardware provisioning and discovery.*
