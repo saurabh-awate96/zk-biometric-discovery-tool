@@ -18,10 +18,11 @@ import requests
 import json
 
 class UnifiedBiometricFetcher:
-    def __init__(self, port=4370, timeout=1.0, password=0):
+    def __init__(self, port=4370, timeout=1.0, password=0, no_push=False):
         self.port = port
         self.timeout = timeout
         self.password = password
+        self.no_push = no_push
         self.found_devices = []
         self.print_lock = threading.Lock()
         self.config = self.load_full_config()
@@ -337,17 +338,25 @@ class UnifiedBiometricFetcher:
             # Display formatted log & Push to Frappe
             if attendance:
                 output.append("\n    " + "-"*75)
-                output.append(f"    {'User ID':<10} | {'Name':<25} | {'Timestamp':<25} | {'Status'} | {'Frappe Push'}")
+                header = f"    {'User ID':<10} | {'Name':<25} | {'Timestamp':<25} | {'Status'}"
+                if not self.no_push:
+                    header += " | {'Frappe Push'}"
+                output.append(header)
                 output.append("    " + "-"*75)
+                
                 for att in attendance:
                     u_name = user_map.get(att.user_id, "Unknown")
                     status_label = "IN" if att.status in [0, 3, 4] else "OUT"
                     
-                    # Push feature
-                    success, msg = self.push_to_frappe(att, info['SN'], u_name)
-                    push_status = "OK" if success else f"Fail: {msg[:15]}..."
+                    row = f"    {att.user_id:<10} | {u_name[:25]:<25} | {str(att.timestamp):<25} | {status_label:<8}"
                     
-                    output.append(f"    {att.user_id:<10} | {u_name[:25]:<25} | {str(att.timestamp):<25} | {status_label:<8} | {push_status}")
+                    if not self.no_push:
+                        # Push feature
+                        success, msg = self.push_to_frappe(att, info['SN'], u_name)
+                        push_status = "OK" if success else f"Fail: {msg[:15]}..."
+                        row += f" | {push_status}"
+                    
+                    output.append(row)
                 output.append("    " + "-"*75)
             
             conn.enable_device()
@@ -372,6 +381,7 @@ def main():
     parser.add_argument('--today', action='store_true', help='Fetch only today\'s attendance')
     parser.add_argument('--yesterday', action='store_true', help='Fetch only yesterday\'s attendance')
     parser.add_argument('--all', action='store_true', help='Fetch all attendance records')
+    parser.add_argument('--no-push', action='store_true', help='Do NOT push data to Frappe (local view only)')
     args = parser.parse_args()
 
     # Determine date filter - Defaulting to YESTERDAY as requested
@@ -386,8 +396,16 @@ def main():
         # Default to yesterday
         date_filter = datetime.now().date() - timedelta(days=1)
         print(f"[*] Filtering for: YESTERDAY ({date_filter})")
+    
+    no_push = args.no_push
+    if not no_push:
+        # Check if config has required keys if we ARE pushing
+        config = UnifiedBiometricFetcher().config
+        if not config.get('FRAPPE_SITE') or not config.get('API_KEY'):
+            print("[!] Warning: Config missing Frappe keys. Defaulting to --no-push mode.")
+            no_push = True
 
-    fetcher = UnifiedBiometricFetcher()
+    fetcher = UnifiedBiometricFetcher(no_push=no_push)
     
     # 1. Start discovery and immediate fetching
     if args.ip:
