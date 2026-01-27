@@ -103,30 +103,62 @@ class UnifiedBiometricFetcher:
         if not site or not api_key or not api_secret:
             return False, "Config Missing (Site/Keys)"
 
-        # Biometric logs usually use 1 for IN, 0 for OUT
-        log_type = "IN" if att.status == 1 else "OUT"
+        # Mapping ZK Punch Types to ERPNext IN/OUT
+        # 0: Check-In, 1: Check-Out, 4: OT-In, 5: OT-Out
+        # We'll follow the reference script logic
+        in_values = [0, 3, 4]
+        out_values = [1, 2, 5]
         
+        if att.status in in_values:
+            log_type = "IN"
+        elif att.status in out_values:
+            log_type = "OUT"
+        else:
+            log_type = "IN" # Default fallback
+
         # Standard HRMS payload
         payload = {
             "employee_field_value": str(att.user_id),
-            "employee_fieldname": employee_fieldname,
             "timestamp": str(att.timestamp),
             "device_id": device_sn,
             "log_type": log_type
         }
 
-        try:
-            url = f"{site.rstrip('/')}/api/method/hrms.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field"
-            response = self.session.post(url, data=json.dumps(payload), timeout=10)
-            
-            if response.status_code == 200:
-                return True, "Success"
-            
-            # If rejected, try fallback but log why rejected
-            return self.push_to_frappe_fallback(att, device_sn, log_type, f"Method failed ({response.status_code})")
-            
-        except Exception as e:
-            return False, f"Request Error: {str(e)[:20]}"
+        # Try hrms prefix first (v14+), then erpnext (v13-)
+        methods = [
+            "hrms.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field",
+            "erpnext.hr.doctype.employee_checkin.employee_checkin.add_log_based_on_employee_field"
+        ]
+
+        last_err = "Unknown Error"
+        for method in methods:
+            try:
+                url = f"{site.rstrip('/')}/api/method/{method}"
+                response = self.session.post(url, json=payload, timeout=10)
+                
+                if response.status_code == 200:
+                    return True, "Success"
+                
+                if response.status_code == 404:
+                    continue # Try next method
+                
+                # If it's a 403 or 500, we might want to see the error message
+                try:
+                    error_data = response.json()
+                    if '_server_messages' in error_data:
+                        msgs = json.loads(error_data['_server_messages'])
+                        last_err = msgs[0].get('message', f"HTTP {response.status_code}")
+                    else:
+                        last_err = f"HTTP {response.status_code}"
+                except:
+                    last_err = f"HTTP {response.status_code}"
+                    
+            except Exception as e:
+                last_err = str(e)
+                continue
+
+        # If all methods fail or return errors, try fallback
+        return self.push_to_frappe_fallback(att, device_sn, log_type, last_err)
 
     def push_to_frappe_fallback(self, att, device_sn, log_type, reason=""):
         """Fallback that looks up Employee first and then inserts Checkin"""
@@ -309,13 +341,11 @@ class UnifiedBiometricFetcher:
                 output.append("    " + "-"*75)
                 for att in attendance:
                     u_name = user_map.get(att.user_id, "Unknown")
-                    status_label = "Check-Out" if att.status == 0 else "Check-In"
+                    status_label = "IN" if att.status in [0, 3, 4] else "OUT"
                     
-                    # Push feature - ONLY for User 120 during testing
-                    push_status = "Skipped (Test Mode)"
-                    if str(att.user_id) == "120":
-                        success, msg = self.push_to_frappe(att, info['SN'], u_name)
-                        push_status = "OK" if success else f"Fail: {msg[:15]}..."
+                    # Push feature
+                    success, msg = self.push_to_frappe(att, info['SN'], u_name)
+                    push_status = "OK" if success else f"Fail: {msg[:15]}..."
                     
                     output.append(f"    {att.user_id:<10} | {u_name[:25]:<25} | {str(att.timestamp):<25} | {status_label:<8} | {push_status}")
                 output.append("    " + "-"*75)
