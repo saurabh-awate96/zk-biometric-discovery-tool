@@ -69,6 +69,8 @@ class UnifiedBiometricFetcher:
             'FRAPPE_SITE': None,
             'API_KEY': None,
             'API_SECRET': None,
+            'SHIFT_TYPE': None,
+            'SHIFT_DEVICE_MAP': {},
             'USER_MAP': {}
         }
         try:
@@ -83,7 +85,7 @@ class UnifiedBiometricFetcher:
                             key, val = line.split("=", 1)
                             key = key.strip()
                             val = val.strip().strip('"').strip("'")
-                            if key == 'USER_MAP':
+                            if key == 'USER_MAP' or key == 'SHIFT_DEVICE_MAP':
                                 try: config[key] = json.loads(val)
                                 except: pass
                             else:
@@ -95,6 +97,14 @@ class UnifiedBiometricFetcher:
     def load_config_ip(self):
         """Backward compatibility for discovery logic"""
         return self.config.get('DEVICE_IP')
+
+    def get_shift_for_device(self, device_sn):
+        """Returns the shift type mapped to a device SN, or the default shift type"""
+        mapping = self.config.get('SHIFT_DEVICE_MAP', {})
+        for shift_name, serials in mapping.items():
+            if device_sn in serials:
+                return shift_name
+        return self.config.get('SHIFT_TYPE')
 
     def push_to_frappe(self, att, device_sn, user_name):
         """Pushes a single attendance record to Frappe using the standard HRMS method"""
@@ -218,6 +228,50 @@ class UnifiedBiometricFetcher:
         except Exception as e:
             return False, f"Fallback Exception: {str(e)[:20]}"
 
+    def get_last_sync_from_erpnext(self, shift_type):
+        """Fetches the last_sync_of_checkin from the specified Shift Type in ERPNext"""
+        site = self.config.get('FRAPPE_SITE')
+        if not site:
+            return None
+        
+        try:
+            url = f"{site.rstrip('/')}/api/resource/Shift Type/{shift_type}"
+            response = self.session.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json().get("data", {})
+                last_sync = data.get("last_sync_of_checkin")
+                if last_sync:
+                    # ERPNext usually returns 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DD HH:MM:SS.ffffff'
+                    # We'll use a flexible parser or just take it as is if it matches what ZK uses
+                    try:
+                        return datetime.strptime(last_sync.split('.')[0], "%Y-%m-%d %H:%M:%S")
+                    except:
+                        return None
+            return None
+        except Exception as e:
+            print(f"[!] Error fetching last sync from ERPNext: {e}")
+            return None
+
+    def update_last_sync_in_erpnext(self, shift_type, timestamp):
+        """Updates the last_sync_of_checkin field in ERPNext for the specified Shift Type"""
+        site = self.config.get('FRAPPE_SITE')
+        if not site or not timestamp:
+            return False
+            
+        try:
+            url = f"{site.rstrip('/')}/api/resource/Shift Type/{shift_type}"
+            payload = {"last_sync_of_checkin": str(timestamp)}
+            response = self.session.put(url, json=payload, timeout=10)
+            if response.status_code == 200:
+                print(f"[*] Updated last_sync_of_checkin for {shift_type} to {timestamp}")
+                return True
+            else:
+                print(f"[!] Failed to update Shift Type sync: HTTP {response.status_code}")
+                return False
+        except Exception as e:
+            print(f"[!] Error updating last sync in ERPNext: {e}")
+            return False
+
     def discover_and_fetch(self, subnets, date_filter):
         """Scans the network and fetches data immediately using concurrency"""
         configured_ip = self.load_config_ip()
@@ -270,19 +324,20 @@ class UnifiedBiometricFetcher:
         print(f"[*] Found {len(found_ips)} device(s). Starting data retrieval...")
         
         success_count = 0
-        # For fetching data, we can also use threads, but let's do it sequentially or with fewer threads
-        # to avoid overwhelming the devices or garbling logs. 
-        # Since usually there are few devices, sequential fetching is okay, 
-        # but for speed let's use a small pool.
+        total_latest_timestamp = None
+        
         with ThreadPoolExecutor(max_workers=min(len(found_ips), 5)) as executor:
-            future_to_fetch = {executor.submit(self.fetch_data_from_device, ip, date_filter): ip for ip in found_ips}
+            future_to_fetch = {executor.submit(self.fetch_data_from_device, ip, date_filter, cmd_args=getattr(self, '_current_args', None)): ip for ip in found_ips}
             for future in as_completed(future_to_fetch):
-                if future.result():
+                success, latest_ts = future.result()
+                if success:
                     success_count += 1
+                    if latest_ts and (not total_latest_timestamp or latest_ts > total_latest_timestamp):
+                        total_latest_timestamp = latest_ts
             
-        return len(found_ips), success_count
+        return len(found_ips), success_count, total_latest_timestamp
 
-    def fetch_data_from_device(self, ip, date_filter=None):
+    def fetch_data_from_device(self, ip, date_filter=None, cmd_args=None):
         """Connects to a single device and retrieves all details"""
         zk = ZK(ip, port=self.port, timeout=5, password=self.password, force_udp=False, ommit_ping=True)
         conn = None
@@ -327,15 +382,40 @@ class UnifiedBiometricFetcher:
             # Create a user mapping for better attendance display
             user_map = {u.user_id: u.name for u in users}
             
-            # 3. Get Attendance
-            label = str(date_filter) if date_filter else "ALL"
+            # 3. Determine actual date filter and shift for THIS device
+            device_shift = self.get_shift_for_device(info.get('SN'))
+            actual_filter = date_filter
+            
+            # If no explicit date flag (--today, --all, etc) is used, 
+            # and we have a mapped shift, use ITS last sync.
+            is_explicit_date = cmd_args and (cmd_args.today or cmd_args.all or cmd_args.yesterday)
+            
+            if not is_explicit_date and device_shift:
+                output.append(f"[*] Mapped Shift: {device_shift}")
+                ts_sync = self.get_last_sync_from_erpnext(device_shift)
+                if ts_sync:
+                    actual_filter = ts_sync
+                    output.append(f"[*] Per-device Sync Start: {actual_filter}")
+                else:
+                    actual_filter = None # Fetch ALL if sync field is empty
+                    output.append(f"[*] Per-device Sync field is empty. Fetching ALL logs.")
+            
+            label = str(actual_filter) if actual_filter else "ALL"
             output.append(f"\n[*] Fetching logs for: {label}...")
             attendance = conn.get_attendance()
             
-            if date_filter:
-                attendance = [att for att in attendance if att.timestamp.date() == date_filter]
+            if actual_filter:
+                if isinstance(actual_filter, datetime):
+                    # Filter for logs strictly AFTER the last sync timestamp
+                    attendance = [att for att in attendance if att.timestamp > actual_filter]
+                else:
+                    # Legacy date-only filter
+                    attendance = [att for att in attendance if att.timestamp.date() == actual_filter]
             
             output.append(f"    - Records Found: {len(attendance)}")
+            
+            # Keep track of the latest timestamp successfully processed
+            latest_timestamp = None
             
             # Display formatted log & Push to Frappe
             if attendance:
@@ -355,11 +435,20 @@ class UnifiedBiometricFetcher:
                     if not self.no_push:
                         # Push feature
                         success, msg = self.push_to_frappe(att, info['SN'], u_name)
-                        push_status = "OK" if success else f"Fail: {msg[:15]}..."
+                        if success:
+                            push_status = "OK"
+                            if not latest_timestamp or att.timestamp > latest_timestamp:
+                                latest_timestamp = att.timestamp
+                        else:
+                            push_status = f"Fail: {msg[:15]}..."
                         row += f" | {push_status}"
                     
                     output.append(row)
                 output.append("    " + "-"*75)
+                
+                # Update specific shift if this was a sync-based run
+                if not self.no_push and device_shift and latest_timestamp and not is_explicit_date:
+                    self.update_last_sync_in_erpnext(device_shift, latest_timestamp)
             
             conn.enable_device()
             
@@ -367,7 +456,7 @@ class UnifiedBiometricFetcher:
             with self.print_lock:
                 print("\n".join(output))
                 
-            return True
+            return True, latest_timestamp
             
         except Exception as e:
             with self.print_lock:
@@ -384,11 +473,26 @@ def main():
     parser.add_argument('--yesterday', action='store_true', help='Fetch only yesterday\'s attendance')
     parser.add_argument('--all', action='store_true', help='Fetch all attendance records')
     parser.add_argument('--no-push', action='store_true', help='Do NOT push data to Frappe (local view only)')
+    parser.add_argument('--shift-type', type=str, help='Sync based on this Shift Type in ERPNext')
     args = parser.parse_args()
 
-    # Determine date filter - Defaulting to YESTERDAY as requested
+    # Create fetcher first to access config
+    fetcher = UnifiedBiometricFetcher(no_push=args.no_push)
+    fetcher._current_args = args # Store args for thread pool use
+    
+    # Determine shift type from arg or config
+    shift_type = args.shift_type or fetcher.config.get('SHIFT_TYPE')
+
+    # Determine date filter
     date_filter = None
-    if args.today:
+    if shift_type:
+        print(f"[*] Syncing based on Shift Type: {shift_type}")
+        date_filter = fetcher.get_last_sync_from_erpnext(shift_type)
+        if date_filter:
+            print(f"[*] Last Sync Timestamp: {date_filter}")
+        else:
+            print(f"[!] No previous sync found for {shift_type}. Fetching ALL logs.")
+    elif args.today:
         date_filter = datetime.now().date()
         print("[*] Filtering for: TODAY")
     elif args.all:
@@ -406,21 +510,28 @@ def main():
         if not config.get('FRAPPE_SITE') or not config.get('API_KEY'):
             print("[!] Warning: Config missing Frappe keys. Defaulting to --no-push mode.")
             no_push = True
-
-    fetcher = UnifiedBiometricFetcher(no_push=no_push)
+    
+    # Update fetcher if no_push was changed
+    fetcher.no_push = no_push
     
     # 1. Start discovery and immediate fetching
     if args.ip:
         print(f"[*] Using direct IP: {args.ip}")
         total_found = 1
-        success_count = 1 if fetcher.fetch_data_from_device(args.ip, date_filter) else 0
+        success, latest_ts = fetcher.fetch_data_from_device(args.ip, date_filter, cmd_args=args)
+        success_count = 1 if success else 0
+        total_latest_ts = latest_ts
     else:
         subnets = fetcher.get_local_subnets()
-        total_found, success_count = fetcher.discover_and_fetch(subnets, date_filter)
+        total_found, success_count, total_latest_ts = fetcher.discover_and_fetch(subnets, date_filter)
     
     if total_found == 0:
         print("\n[!] No devices discovered. Ensure you are on the same network as the devices.")
         return
+
+    # Update Shift Type in ERPNext if we have a new latest timestamp
+    if not no_push and shift_type and total_latest_ts:
+        fetcher.update_last_sync_in_erpnext(shift_type, total_latest_ts)
 
     print(f"\n{'-'*60}")
     print(f"COMPLETE: Processed {success_count} / {total_found} discovered devices.")
