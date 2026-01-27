@@ -39,17 +39,19 @@ class UnifiedBiometricFetcher:
         subnets = ["192.168.1", "192.168.0"]
         try:
             # Get local IP to guess the subnet
+            # We connect to a public IP; this doesn't actually send data but allows OS to choose correct interface
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80))
             local_ip = s.getsockname()[0]
             s.close()
             
             my_subnet = ".".join(local_ip.split(".")[:-1])
-            if my_subnet not in subnets:
+            if my_subnet and my_subnet not in subnets and not my_subnet.startswith("127."):
                 subnets.append(my_subnet)
-        except:
+        except Exception:
+            # Fallback for systems without external internet access or restricted networking
             pass
-        return subnets
+        return list(set(subnets))
 
     def check_port(self, ip, port):
         """Checks if a port is open with a more generous timeout"""

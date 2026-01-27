@@ -1,93 +1,111 @@
 # Standalone Setup Guide - ZK Biometric Discovery Tool
 
-This guide explains how to run the Biometric Discovery Tool on any Windows or Linux machine without requiring a Frappe/ERPNext installation.
+This guide explains how to run the Biometric Discovery Tool on any machine without requiring a Frappe/ERPNext installation. The tool is now unified into a single script: `fetch_attendance_all.py`.
 
-## Prerequisites
+---
 
-- **Python 3.7+**: Ensure Python is installed on your system.
-  - Windows: [python.org](https://www.python.org/downloads/) (Check "Add Python to PATH" during installation)
-  - Linux: `sudo apt install python3 python3-pip`
+## 📋 Prerequisites (All Systems)
+- **Python 3.7+**: Required to run the script.
+- **Network**: Your computer must be on the same local network (Wi-Fi or LAN) as the biometric devices.
 
-## Setup Instructions
+---
 
-### 1. Download the Tool
-- **Option A (Git)**: Run `git clone https://github.com/saurabh-awate96/zk-biometric-discovery-tool.git`
-- **Option B (Zip)**: Download the project as a ZIP from GitHub and extract it to a folder (e.g., `C:\zk-tool`).
+## 🪟 Windows Setup & Usage
 
-### 2. Open Terminal
-- **Windows**: Press `Win + R`, type `cmd` or `powershell`, and press Enter.
-- **Linux**: Open your favorite terminal emulator.
+### 1. Installation
+- Download the project as a ZIP from GitHub and extract it (e.g., `C:\zk-tool`).
+- Open **Command Prompt** or **PowerShell**.
+- Navigate to the folder: `cd C:\zk-tool`
+- Install dependencies:
+  ```cmd
+  pip install -r requirements.txt
+  ```
 
-### 3. Navigate to the Folder
-Use the `cd` command to enter the tool's directory:
-```bash
-# Example for Windows
-cd C:\zk-tool
-# Example for Linux
-cd ~/zk-biometric-discovery-tool
-```
+### 2. Running the Tool
+- **Auto-Discovery (Scan Network)**:
+  ```cmd
+  python fetch_attendance_all.py --no-push
+  ```
+- **Fetch Today's Data**:
+  ```cmd
+  python fetch_attendance_all.py --today --no-push
+  ```
+- **Target Specific IP**:
+  ```cmd
+  python fetch_attendance_all.py --ip 192.168.1.31 --no-push
+  ```
 
-### 4. Install Dependencies
-```bash
-# Windows
-pip install -r requirements.txt
+---
 
-# Linux
-pip3 install -r requirements.txt
-```
+## 🐧 Linux Setup & Usage
 
-## Running the Tool on Windows
+### 1. Installation
+- Open your terminal.
+- Clone the repo or navigate to the folder.
+- Install Python & Pip (if not present): `sudo apt install python3 python3-pip`
+- Install dependencies:
+  ```bash
+  pip3 install -r requirements.txt
+  ```
 
-Once dependencies are installed, you can scan your network:
+### 2. Running the Tool
+- **Auto-Discovery (Scan Network)**:
+  ```bash
+  python3 fetch_attendance_all.py --no-push
+  ```
+- **Fetch Today's Data**:
+  ```bash
+  python3 fetch_attendance_all.py --today --no-push
+  ```
+- **Target Specific IP**:
+  ```bash
+  python3 fetch_attendance_all.py --ip 192.168.1.31 --no-push
+  ```
 
-1. **Verify Python**: Type `python --version`. It should show 3.7 or higher.
-2. **Run Scan**:
-   ```cmd
-   python fetch_attendance_all.py --no-push
-   ```
-3. **Target Specific IP** (if discovery is slow):
-   ```cmd
-   python fetch_attendance_all.py --ip 192.168.1.31 --no-push
-   ```
+---
 
-### 3. Configuration (Optional)
-If you just want to scan your network and see logs on your screen, you don't need any configuration.
+## 🍎 macOS Setup & Usage
+
+### 1. Installation
+- Open **Terminal**.
+- Install [Homebrew](https://brew.sh/) if you don't have it.
+- Use the automated setup script (Recommended):
+  ```bash
+  chmod +x setup_mac.sh && ./setup_mac.sh
+  ```
+- *OR Manual install*:
+  ```bash
+  brew install python
+  pip3 install -r requirements.txt
+  ```
+
+### 2. Running the Tool
+- **Auto-Discovery (Scan Network)**:
+  ```bash
+  python3 fetch_attendance_all.py --no-push
+  ```
+- **Fetch Today's Data**:
+  ```bash
+  python3 fetch_attendance_all.py --today --no-push
+  ```
+- **Target Specific IP**:
+  ```bash
+  python3 fetch_attendance_all.py --ip 192.168.1.31 --no-push
+  ```
+
+---
+
+## ⚙️ Configuration (Optional)
 
 If you eventually want to push data to an ERP, edit `config.env`:
 - `DEVICE_PORT`: Default is 4370.
-- `FRAPPE_SITE`: Your ERP URL.
+- `FRAPPE_SITE`: Your ERP URL (e.g., `https://your-erp.com`).
 - `API_KEY` & `API_SECRET`: Your User API keys.
 
-## Running the Tool
+---
 
-### A. Simple Discovery (Local Only)
-To scan the network and display attendance on your screen without trying to connect to any ERP:
+## ❓ Troubleshooting
 
-```bash
-python fetch_attendance_all.py --no-push
-```
-
-### B. Fetch for a Specific Date
-```bash
-# Fetch yesterday's data (Default)
-python fetch_attendance_all.py --no-push
-
-# Fetch today's data
-python fetch_attendance_all.py --today --no-push
-
-# Fetch all historical data
-python fetch_attendance_all.py --all --no-push
-```
-
-### C. Connect to a Specific Device IP
-If you already know the IP of your biometric device:
-
-```bash
-python fetch_attendance_all.py --ip 192.168.1.31 --no-push
-```
-
-## Troubleshooting
-
-- **No devices discovered**: Ensure your computer is on the same local network (Wi-Fi or LAN) as the biometric devices.
+- **No devices discovered**: Ensure your computer is on the same local network.
 - **Connection Timeout**: The device might be busy or the network is unstable. Try running the command again.
-- **Permission Denied (Linux)**: Some systems may require `sudo` if you are accessing restricted network ports, though usually not required for this tool.
+- **Permission Denied (Linux)**: Some systems may require `sudo` for certain network operations.
