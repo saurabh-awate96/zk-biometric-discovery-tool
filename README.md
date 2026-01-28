@@ -87,7 +87,7 @@ Before running the tool in production mode, edit `config.env` to connect to your
 To support multiple devices or machines running simultaneously, map Serial Numbers or Device IDs (Machine Number) to Shift Types:
 ```bash
 # JSON format: {"Shift Name": ["IDENTIFIER1", "IDENTIFIER2"]}
-SHIFT_DEVICE_MAP='{"General Shift": ["SN123456789", "1"], "Night Shift": ["SN987654321"]}'
+SHIFT_DEVICE_MAP='{"General Shift": ["Serial Number" or "Device ID"], "Night Shift": ["Serial Number" or "Device ID"]}'
 ```
 
 ---
