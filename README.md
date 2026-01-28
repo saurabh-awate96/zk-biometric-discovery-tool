@@ -84,10 +84,10 @@ Before running the tool in production mode, edit `config.env` to connect to your
 - `API_KEY` & `API_SECRET`: Your User API keys.
 
 ### Advanced Shift-Device Mapping
-To support multiple devices or machines running simultaneously, map Serial Numbers to Shift Types:
+To support multiple devices or machines running simultaneously, map Serial Numbers or Device IDs (Machine Number) to Shift Types:
 ```bash
-# JSON format: {"Shift Name": ["DEVICESERIALNUMBER"]}
-SHIFT_DEVICE_MAP='{"General Shift": ["SN123456789"], "Night Shift": ["SN987654321"]}'
+# JSON format: {"Shift Name": ["IDENTIFIER1", "IDENTIFIER2"]}
+SHIFT_DEVICE_MAP='{"General Shift": ["SN123456789", "1"], "Night Shift": ["SN987654321"]}'
 ```
 
 ---

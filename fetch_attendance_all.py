@@ -107,15 +107,17 @@ class UnifiedBiometricFetcher:
         """Backward compatibility for discovery logic"""
         return self.config.get('DEVICE_IP')
 
-    def get_shift_for_device(self, device_sn):
-        """Returns the shift type mapped to a device SN, or the default shift type"""
+    def get_shift_for_device(self, device_sn, device_id=None):
+        """Returns the shift type mapped to a device SN or Device ID, or the default shift type"""
         mapping = self.config.get('SHIFT_DEVICE_MAP', {})
-        for shift_name, serials in mapping.items():
-            if device_sn in serials:
+        device_id_str = str(device_id) if device_id is not None else None
+        
+        for shift_name, identifiers in mapping.items():
+            if device_sn in identifiers or (device_id_str and device_id_str in identifiers):
                 return shift_name
         return self.config.get('SHIFT_TYPE')
 
-    def push_to_frappe(self, att, device_sn, user_name):
+    def push_to_frappe(self, att, device_sn, device_id, user_name):
         """Pushes a single attendance record to Frappe using the standard HRMS method"""
         site = self.config.get('FRAPPE_SITE')
         api_key = self.config.get('API_KEY')
@@ -139,11 +141,14 @@ class UnifiedBiometricFetcher:
             # If log type is not recognized or machine returns empty/None
             log_type = ""
 
+        # Combine Machine ID and Serial Number as requested
+        device_id_str = f"{device_id} (SN:{device_sn})" if device_id and device_id != "N/A" else device_sn
+
         # Standard HRMS payload
         payload = {
             "employee_field_value": str(att.user_id),
             "timestamp": str(att.timestamp),
-            "device_id": device_sn,
+            "device_id": device_id_str,
             "log_type": log_type
         }
 
@@ -181,9 +186,9 @@ class UnifiedBiometricFetcher:
                 continue
 
         # If all methods fail or return errors, try fallback
-        return self.push_to_frappe_fallback(att, device_sn, log_type, last_err)
+        return self.push_to_frappe_fallback(att, device_sn, device_id, log_type, last_err)
 
-    def push_to_frappe_fallback(self, att, device_sn, log_type, reason=""):
+    def push_to_frappe_fallback(self, att, device_sn, device_id, log_type, reason=""):
         """Fallback that looks up Employee first and then inserts Checkin"""
         site = self.config.get('FRAPPE_SITE')
         fieldname = self.config.get('FRAPPE_EMPLOYEE_FIELD', 'attendance_device_id')
@@ -208,11 +213,14 @@ class UnifiedBiometricFetcher:
             
             # 2. Create Checkin
             url_checkin = f"{site.rstrip('/')}/api/resource/Employee Checkin"
+            # Combine Machine ID and Serial Number
+            device_id_str = f"{device_id} (SN:{device_sn})" if device_id and device_id != "N/A" else device_sn
+
             checkin_payload = {
                 "employee": employee_id,
                 "log_type": log_type,
                 "time": str(att.timestamp),
-                "device_id": device_sn,
+                "device_id": device_id_str,
                 "plugin_name": "ZK-Biometric-Tool"
             }
             
@@ -391,15 +399,24 @@ class UnifiedBiometricFetcher:
             conn = zk.connect()
             conn.disable_device()
             
-            # 1. Get Serial Number (Fast, always needed)
+            # 1. Get Identifiers (SN and Device ID)
             try: 
                 sn = conn.get_serialnumber()
             except: 
                 try: sn = conn.get_sn()
                 except: sn = "N/A"
+
+            # Fetch Device ID (Machine Number)
+            device_id = "N/A"
+            try:
+                cmd_res = conn._ZK__send_command(const.CMD_OPTIONS_RRQ, b'DeviceID\x00', 1024)
+                if cmd_res.get('status'):
+                    device_id = conn._ZK__data.split(b'=', 1)[-1].split(b'\x00')[0].decode()
+            except:
+                pass
             
-            # 2. Determine actual date filter and shift
-            device_shift = self.get_shift_for_device(sn)
+            # 2. Determine actual date filter and shift using BOTH identifiers
+            device_shift = self.get_shift_for_device(sn, device_id)
             actual_filter = date_filter
             is_explicit_date = cmd_args and (cmd_args.today or cmd_args.all or cmd_args.yesterday)
             
@@ -417,11 +434,10 @@ class UnifiedBiometricFetcher:
                 else:
                     attendance = [att for att in attendance if att.timestamp.date() == actual_filter]
             
-            # 4. ONLY if new records found, fetch metadata (Users and Device Info)
-            # This is the "Lazy Loading" optimization
+            # 4. ONLY if new records found, fetch metadata (Additional info)
             if attendance:
                 # Fetch Device Info
-                info = {'SN': sn}
+                info = {'SN': sn, 'Device ID': device_id}
                 try: info['Name'] = conn.get_device_name()
                 except: info['Name'] = "N/A"
                 try: info['Firmware'] = conn.get_firmware_version()
@@ -460,7 +476,7 @@ class UnifiedBiometricFetcher:
                     row = f"    {att.user_id:<10} | {u_name[:25]:<25} | {str(att.timestamp):<25} | {status_label:<8}"
                     
                     if not self.no_push:
-                        success, msg = self.push_to_frappe(att, sn, u_name)
+                        success, msg = self.push_to_frappe(att, sn, device_id, u_name)
                         if success:
                             push_status = "OK"
                             if not latest_timestamp or att.timestamp > latest_timestamp:
