@@ -136,7 +136,8 @@ class UnifiedBiometricFetcher:
         elif att.status in out_values:
             log_type = "OUT"
         else:
-            log_type = "IN" # Default fallback
+            # If log type is not recognized or machine returns empty/None
+            log_type = ""
 
         # Standard HRMS payload
         payload = {
@@ -448,7 +449,14 @@ class UnifiedBiometricFetcher:
                 latest_timestamp = None
                 for att in attendance:
                     u_name = user_map.get(att.user_id, "Unknown")
-                    status_label = "IN" if att.status in [0, 3, 4] else "OUT"
+                    in_values = [0, 3, 4]
+                    out_values = [1, 2, 5]
+                    if att.status in in_values:
+                        status_label = "IN"
+                    elif att.status in out_values:
+                        status_label = "OUT"
+                    else:
+                        status_label = ""
                     row = f"    {att.user_id:<10} | {u_name[:25]:<25} | {str(att.timestamp):<25} | {status_label:<8}"
                     
                     if not self.no_push:
