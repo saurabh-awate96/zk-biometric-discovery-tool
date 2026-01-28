@@ -92,11 +92,55 @@ SHIFT_DEVICE_MAP='{"General Shift": ["SN123456789"], "Night Shift": ["SN98765432
 
 ---
 
+## ⏰ Automation (Running every 30 mins)
+
+To keep your attendance data synced automatically, you can set up a scheduled task.
+
+### 🐧 Linux & 🍎 macOS (using `cron` + `flock`)
+
+1. **Find your Python path**:
+   ```bash
+   which python3
+   ```
+2. **Open crontab**:
+   ```bash
+   crontab -e
+   ```
+3. **Add the following line** (Replace `/path/to/tool` with your actual directory):
+   ```bash
+   */30 * * * * flock -n /tmp/zk_biometric.lock -c "cd /path/to/tool && /usr/bin/python3 fetch_attendance_all.py >> cron_log.txt 2>&1"
+   ```
+   > [!TIP]
+   > `flock -n` ensures that if a previous sync is still running, a new one won't start, preventing duplicate processes.
+
+---
+
+### 🪟 Windows (using Task Scheduler)
+
+1. **Set up Task Scheduler**:
+   - Open **Task Scheduler** and click **Create Basic Task**.
+   - Name: `ZK_Biometric_Sync`.
+   - Trigger: **Daily** -> set any start time -> click Next.
+   - Action: **Start a program** -> Browse and select the `run_sync.bat` file in the tool folder.
+   - Click **Finish**.
+
+2. **Configure Repeat Interval**:
+   - Right-click the new task -> **Properties**.
+   - **Triggers** tab -> Select the trigger -> **Edit**.
+   - Check **Repeat task every:** and set to `30 minutes`.
+   - Set **for a duration of:** to `Indefinitely`.
+3. **Ensure Process Safety**:
+   - Go to the **Settings** tab.
+   - Under "If the task is already running...", select **Do not start a new instance**.
+
+---
+
 ## ❓ Troubleshooting
 
 - **No devices discovered**: Ensure your computer is on the same local network as the devices.
 - **Connection Timeout**: The device might be busy or the network is unstable. Try running the command again.
 - **Multi-Machine Sync**: If running from multiple locations, ensure each machine manages different devices/shifts via `SHIFT_DEVICE_MAP`.
+- **Duplicate Processes**: On Linux/macOS, `flock` handles this. On Windows, ensure the Task Scheduler "Do not start a new instance" setting is checked.
 
 ---
 *Note: This tool is intended for hardware provisioning and discovery.*

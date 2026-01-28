@@ -16,6 +16,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import requests
 import json
+import time
+
+CACHE_FILE = ".discovery_cache.json"
 
 class UnifiedBiometricFetcher:
     def __init__(self, port=4370, timeout=1.0, password=0, no_push=False):
@@ -26,6 +29,8 @@ class UnifiedBiometricFetcher:
         self.found_devices = []
         self.print_lock = threading.Lock()
         self.config = self.load_full_config()
+        self.shift_sync_cache = {} # Cache shift sync timestamps for current run
+        self.discovery_cache = self.load_discovery_cache()
         self.session = requests.Session()
         if self.config.get('API_KEY') and self.config.get('API_SECRET'):
             self.session.headers.update({
@@ -33,6 +38,10 @@ class UnifiedBiometricFetcher:
                 "Content-Type": "application/json",
                 "Accept": "application/json"
             })
+            # Increase connection pool size for concurrent pushes
+            adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
 
     def get_local_subnets(self):
         """Attempts to detect local subnets beyond the default ones"""
@@ -234,6 +243,10 @@ class UnifiedBiometricFetcher:
         if not site:
             return None
         
+        # Check local run cache first
+        if shift_type in self.shift_sync_cache:
+            return self.shift_sync_cache[shift_type]
+        
         try:
             url = f"{site.rstrip('/')}/api/resource/Shift Type/{shift_type}"
             response = self.session.get(url, timeout=10)
@@ -241,10 +254,10 @@ class UnifiedBiometricFetcher:
                 data = response.json().get("data", {})
                 last_sync = data.get("last_sync_of_checkin")
                 if last_sync:
-                    # ERPNext usually returns 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DD HH:MM:SS.ffffff'
-                    # We'll use a flexible parser or just take it as is if it matches what ZK uses
                     try:
-                        return datetime.strptime(last_sync.split('.')[0], "%Y-%m-%d %H:%M:%S")
+                        dt = datetime.strptime(last_sync.split('.')[0], "%Y-%m-%d %H:%M:%S")
+                        self.shift_sync_cache[shift_type] = dt
+                        return dt
                     except:
                         return None
             return None
@@ -272,56 +285,82 @@ class UnifiedBiometricFetcher:
             print(f"[!] Error updating last sync in ERPNext: {e}")
             return False
 
+    def load_discovery_cache(self):
+        """Loads previously found IPs to speed up recurring runs"""
+        try:
+            env_dir = os.path.dirname(os.path.abspath(__file__))
+            cache_path = os.path.join(env_dir, CACHE_FILE)
+            if os.path.exists(cache_path):
+                with open(cache_path, 'r') as f:
+                    return json.load(f)
+        except: pass
+        return []
+
+    def save_discovery_cache(self, ips):
+        """Saves current active IPs to cache"""
+        try:
+            env_dir = os.path.dirname(os.path.abspath(__file__))
+            cache_path = os.path.join(env_dir, CACHE_FILE)
+            with open(cache_path, 'w') as f:
+                json.dump(list(set(ips)), f)
+        except: pass
+
     def discover_and_fetch(self, subnets, date_filter):
         """Scans the network and fetches data immediately using concurrency"""
         configured_ip = self.load_config_ip()
+        found_ips = []
         
-        # Priority Check: Try configured IP first if it exists
+        # 1. Try Configured IP
         if configured_ip:
             print(f"[*] Checking priority IP from config: {configured_ip}...")
             if self.check_port(configured_ip, self.port):
-                print(f"[+] Priority device found at {configured_ip}")
-                if self.fetch_data_from_device(configured_ip, date_filter):
-                    return 1, 1 
+                found_ips.append(configured_ip)
 
-        print(f"[*] Starting auto-discovery on subnets: {', '.join(subnets)}...")
-        print(f"[*] Searching for devices on port {self.port} (Multi-threaded)...")
-        
-        all_ips = []
-        for subnet in subnets:
-            for i in range(1, 255):
-                all_ips.append(f"{subnet}.{i}")
-
-        found_ips = []
-        # Use ThreadPoolExecutor for fast scanning
-        max_workers = 100 # Adjust based on system/network capacity
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_ip = {executor.submit(self.check_port, ip, self.port): ip for ip in all_ips}
+        # 2. Try Discovery Cache
+        if not found_ips and self.discovery_cache:
+            print(f"[*] Checking {len(self.discovery_cache)} previously discovered devices...")
+            with ThreadPoolExecutor(max_workers=min(len(self.discovery_cache), 50)) as executor:
+                future_to_ip = {executor.submit(self.check_port, ip, self.port): ip for ip in self.discovery_cache if ip != configured_ip}
+                for future in as_completed(future_to_ip):
+                    if future.result():
+                        found_ips.append(future_to_ip[future])
             
-            scanned_count = 0
-            for future in as_completed(future_to_ip):
-                ip = future_to_ip[future]
-                scanned_count += 1
-                
-                # Feedback every 50 IPs scanned
-                if scanned_count % 50 == 0:
-                    sys.stdout.write(".")
-                    sys.stdout.flush()
-                
-                try:
-                    is_open = future.result()
-                    if is_open:
-                        found_ips.append(ip)
-                        print(f"\n[+] Found active biometric device at {ip}")
-                except Exception:
-                    pass
-        
-        print("\n[*] Scan complete.")
-        
-        if not found_ips:
-            return 0, 0
+            if found_ips:
+                print(f"[+] Found {len(found_ips)} devices via cache.")
 
-        print(f"[*] Found {len(found_ips)} device(s). Starting data retrieval...")
+        # 3. Full Network Scan (Only if no devices found or explicitly requested)
+        if not found_ips:
+            print(f"[*] Cache empty or no devices found. Starting full auto-discovery on subnets: {', '.join(subnets)}...")
+            all_ips = []
+            for subnet in subnets:
+                for i in range(1, 255):
+                    all_ips.append(f"{subnet}.{i}")
+
+            # Use ThreadPoolExecutor for fast scanning
+            max_workers = 100
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_ip = {executor.submit(self.check_port, ip, self.port): ip for ip in all_ips}
+                scanned_count = 0
+                for future in as_completed(future_to_ip):
+                    ip = future_to_ip[future]
+                    scanned_count += 1
+                    if scanned_count % 50 == 0:
+                        sys.stdout.write(".")
+                        sys.stdout.flush()
+                    try:
+                        if future.result():
+                            found_ips.append(ip)
+                            print(f"\n[+] Found active biometric device at {ip}")
+                    except Exception: pass
+            print("\n[*] Scan complete.")
+
+        if not found_ips:
+            return 0, 0, None
+
+        # Save successful IPs to cache for next run
+        self.save_discovery_cache(found_ips)
+
+        print(f"[*] Processing {len(found_ips)} device(s)...")
         
         success_count = 0
         total_latest_timestamp = None
@@ -351,74 +390,54 @@ class UnifiedBiometricFetcher:
             conn = zk.connect()
             conn.disable_device()
             
-            # 1. Get Comprehensive Device Info (Same as device_manager.py)
-            output.append("[*] Retrieving device information...")
-            info = {}
-            try: info['SN'] = conn.get_serialnumber()
+            # 1. Get Serial Number (Fast, always needed)
+            try: 
+                sn = conn.get_serialnumber()
             except: 
-                try: info['SN'] = conn.get_sn()
-                except: info['SN'] = "N/A"
+                try: sn = conn.get_sn()
+                except: sn = "N/A"
             
-            try: info['Name'] = conn.get_device_name()
-            except: info['Name'] = "N/A"
-            
-            try: info['Firmware'] = conn.get_firmware_version()
-            except: info['Firmware'] = "N/A"
-            
-            try: info['Platform'] = conn.get_platform()
-            except: info['Platform'] = "N/A"
-            
-            try: info['MAC'] = conn.get_mac()
-            except: info['MAC'] = "N/A"
-            
-            for k, v in info.items():
-                output.append(f"    - {k:<10}: {v}")
-            
-            # 2. Get Users
-            output.append("\n[*] Fetching enrolled users...")
-            users = conn.get_users()
-            output.append(f"    - Total Enrolled: {len(users)}")
-            
-            # Create a user mapping for better attendance display
-            user_map = {u.user_id: u.name for u in users}
-            
-            # 3. Determine actual date filter and shift for THIS device
-            device_shift = self.get_shift_for_device(info.get('SN'))
+            # 2. Determine actual date filter and shift
+            device_shift = self.get_shift_for_device(sn)
             actual_filter = date_filter
-            
-            # If no explicit date flag (--today, --all, etc) is used, 
-            # and we have a mapped shift, use ITS last sync.
             is_explicit_date = cmd_args and (cmd_args.today or cmd_args.all or cmd_args.yesterday)
             
             if not is_explicit_date and device_shift:
-                output.append(f"[*] Mapped Shift: {device_shift}")
                 ts_sync = self.get_last_sync_from_erpnext(device_shift)
                 if ts_sync:
                     actual_filter = ts_sync
-                    output.append(f"[*] Per-device Sync Start: {actual_filter}")
-                else:
-                    actual_filter = None # Fetch ALL if sync field is empty
-                    output.append(f"[*] Per-device Sync field is empty. Fetching ALL logs.")
             
-            label = str(actual_filter) if actual_filter else "ALL"
-            output.append(f"\n[*] Fetching logs for: {label}...")
+            # 3. Fetch Attendance (Main payload)
             attendance = conn.get_attendance()
             
             if actual_filter:
                 if isinstance(actual_filter, datetime):
-                    # Filter for logs strictly AFTER the last sync timestamp
                     attendance = [att for att in attendance if att.timestamp > actual_filter]
                 else:
-                    # Legacy date-only filter
                     attendance = [att for att in attendance if att.timestamp.date() == actual_filter]
             
-            output.append(f"    - Records Found: {len(attendance)}")
-            
-            # Keep track of the latest timestamp successfully processed
-            latest_timestamp = None
-            
-            # Display formatted log & Push to Frappe
+            # 4. ONLY if new records found, fetch metadata (Users and Device Info)
+            # This is the "Lazy Loading" optimization
             if attendance:
+                # Fetch Device Info
+                info = {'SN': sn}
+                try: info['Name'] = conn.get_device_name()
+                except: info['Name'] = "N/A"
+                try: info['Firmware'] = conn.get_firmware_version()
+                except: info['Firmware'] = "N/A"
+                try: info['Platform'] = conn.get_platform()
+                except: info['Platform'] = "N/A"
+                try: info['MAC'] = conn.get_mac()
+                except: info['MAC'] = "N/A"
+
+                output.append(f"[*] Found {len(attendance)} new records. Fetching metadata for {ip}...")
+                for k, v in info.items():
+                    output.append(f"    - {k:<10}: {v}")
+
+                # Fetch Users (Only if needed for display)
+                users = conn.get_users()
+                user_map = {u.user_id: u.name for u in users}
+                
                 output.append("\n    " + "-"*75)
                 header = f"    {'User ID':<10} | {'Name':<25} | {'Timestamp':<25} | {'Status'}"
                 if not self.no_push:
@@ -426,15 +445,14 @@ class UnifiedBiometricFetcher:
                 output.append(header)
                 output.append("    " + "-"*75)
                 
+                latest_timestamp = None
                 for att in attendance:
                     u_name = user_map.get(att.user_id, "Unknown")
                     status_label = "IN" if att.status in [0, 3, 4] else "OUT"
-                    
                     row = f"    {att.user_id:<10} | {u_name[:25]:<25} | {str(att.timestamp):<25} | {status_label:<8}"
                     
                     if not self.no_push:
-                        # Push feature
-                        success, msg = self.push_to_frappe(att, info['SN'], u_name)
+                        success, msg = self.push_to_frappe(att, sn, u_name)
                         if success:
                             push_status = "OK"
                             if not latest_timestamp or att.timestamp > latest_timestamp:
@@ -442,28 +460,27 @@ class UnifiedBiometricFetcher:
                         else:
                             push_status = f"Fail: {msg[:15]}..."
                         row += f" | {push_status}"
-                    
                     output.append(row)
+                
                 output.append("    " + "-"*75)
                 
-                # Update specific shift if this was a sync-based run
                 if not self.no_push and device_shift and latest_timestamp and not is_explicit_date:
                     self.update_last_sync_in_erpnext(device_shift, latest_timestamp)
-            
-            conn.enable_device()
-            
-            # Thread-safe printing
-            with self.print_lock:
-                print("\n".join(output))
                 
+            # Thread-safe printing
+            if output:
+                with self.print_lock:
+                    print("\n".join(output))
             return True, latest_timestamp
             
         except Exception as e:
             with self.print_lock:
                 print(f"[!] Error processing {ip}: {e}")
-            return False
+            return False, None
         finally:
             if conn:
+                try: conn.enable_device()
+                except: pass
                 conn.disconnect()
 
 def main():
@@ -506,8 +523,7 @@ def main():
     no_push = args.no_push
     if not no_push:
         # Check if config has required keys if we ARE pushing
-        config = UnifiedBiometricFetcher().config
-        if not config.get('FRAPPE_SITE') or not config.get('API_KEY'):
+        if not fetcher.config.get('FRAPPE_SITE') or not fetcher.config.get('API_KEY'):
             print("[!] Warning: Config missing Frappe keys. Defaulting to --no-push mode.")
             no_push = True
     
