@@ -149,8 +149,9 @@ class UnifiedBiometricFetcher:
             "employee_field_value": str(att.user_id),
             "timestamp": str(att.timestamp),
             "device_id": device_id_str,
-            "log_type": log_type
+            "log_type": ""
         }
+
 
         # Try hrms prefix first (v14+), then erpnext (v13-)
         methods = [
@@ -218,7 +219,7 @@ class UnifiedBiometricFetcher:
 
             checkin_payload = {
                 "employee": employee_id,
-                "log_type": log_type,
+                "log_type": "",
                 "time": str(att.timestamp),
                 "device_id": device_id_str,
                 "plugin_name": "ZK-Biometric-Tool"
@@ -540,9 +541,9 @@ def main():
         date_filter = None
         print("[*] Filtering for: ALL RECORDS")
     else:
-        # Default to yesterday
-        date_filter = datetime.now().date() - timedelta(days=1)
-        print(f"[*] Filtering for: YESTERDAY ({date_filter})")
+        # Default to today (fetch everything from midnight to now)
+        date_filter = datetime.now().date()
+        print(f"[*] Filtering for: TODAY ({date_filter})")
     
     no_push = args.no_push
     if not no_push:
