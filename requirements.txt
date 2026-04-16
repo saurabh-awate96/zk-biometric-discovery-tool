@@ -1,2 +1,4 @@
 pyzk
 requests
+pickledb
+PyQt5
